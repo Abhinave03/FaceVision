@@ -2,20 +2,6 @@
 
 A real-time face, eye, and smile detection system built with Python and OpenCV. Supports two detection backends — a DNN-based ResNet SSD detector for higher accuracy and Haar Cascade classifiers as a lightweight fallback. Features a HUD overlay with live stats and switchable detectors.
 
-Built for **HackZen Open Challenge 2026**.
-
----
-
-## Team Details
-
-| Role | Name |
-|------|------|
-| Developer | Abhinav E |
-| Event | HackZen Open Challenge 2026 |
-| Domain | Computer Vision |
-
----
-
 ## Problem Statement
 
 Face detection is used everywhere — from phone unlock to surveillance systems and attendance tracking. But most existing implementations either need GPUs to run in real-time, or are too bare-bones to be useful out of the box.
