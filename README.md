@@ -244,10 +244,5 @@ FaceVision/
 
 ---
 
-## License
-
-MIT License. See [LICENSE](LICENSE) for details.
-
----
-
 Built for HackZen Open Challenge 2026
+
