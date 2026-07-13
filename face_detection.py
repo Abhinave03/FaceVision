@@ -27,11 +27,13 @@ from config import (
     SCREENSHOT_FLASH_FRAMES,
     DEFAULT_DETECT_EYES, DEFAULT_DETECT_SMILES, DEFAULT_FLIP_CAMERA,
     KEY_QUIT, KEY_SCREENSHOT, KEY_TOGGLE_EYES, KEY_TOGGLE_SMILE,
-    KEY_FLIP_CAMERA,
+    KEY_FLIP_CAMERA, KEY_TOGGLE_DNN,
     CONTROLS_TEXT, SMILE_LABEL_TEXT, SMILE_LABEL_Y_OFFSET,
+    USE_DNN, DNN_PROTOTXT, DNN_CAFFEMODEL,
+    DNN_CONFIDENCE_THRESHOLD, DNN_INPUT_SIZE, DNN_MEAN_VALUES,
 )
 
-# load classifiers
+# load Haar classifiers (always available as fallback)
 face_cascade = cv2.CascadeClassifier(FACE_CASCADE_PATH)
 eye_cascade = cv2.CascadeClassifier(EYE_CASCADE_PATH)
 smile_cascade = cv2.CascadeClassifier(SMILE_CASCADE_PATH)
@@ -40,6 +42,17 @@ if face_cascade.empty():
     print("[ERROR] Could not load face cascade classifier.")
     print("Make sure OpenCV is installed: pip install opencv-python")
     exit(1)
+
+# load DNN model if available
+dnn_net = None
+if USE_DNN:
+    try:
+        dnn_net = cv2.dnn.readNetFromCaffe(DNN_PROTOTXT, DNN_CAFFEMODEL)
+        print("[INFO] DNN face detector loaded (ResNet SSD)")
+    except Exception as e:
+        print(f"[WARN] Could not load DNN model: {e}")
+        print("[INFO] Falling back to Haar cascade")
+        dnn_net = None
 
 
 def create_screenshot_dir():
@@ -50,10 +63,8 @@ def create_screenshot_dir():
 
 def draw_fancy_rectangle(frame, x, y, w, h, color, thickness=RECT_THICKNESS,
                          corner_length=CORNER_ACCENT_LENGTH):
-    # thin main rectangle
     cv2.rectangle(frame, (x, y), (x + w, y + h), color, FONT_THICKNESS)
 
-    # corner accents
     cv2.line(frame, (x, y), (x + corner_length, y), color, thickness)
     cv2.line(frame, (x, y), (x, y + corner_length), color, thickness)
 
@@ -87,7 +98,6 @@ def draw_label(frame, text, x, y, bg_color, text_color=COLOR_WHITE):
 def draw_hud(frame, face_count, fps, mode_text, recording=False):
     h, w = frame.shape[:2]
 
-    # top bar overlay
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, 0), (w, HUD_TOP_BAR_HEIGHT), COLOR_BLACK, -1)
     cv2.addWeighted(overlay, HUD_OVERLAY_ALPHA, frame,
@@ -109,7 +119,6 @@ def draw_hud(frame, face_count, fps, mode_text, recording=False):
                 (HUD_MODE_X, HUD_TITLE_Y),
                 FONT, FONT_SCALE_LABEL, COLOR_YELLOW, FONT_THICKNESS, LINE_TYPE)
 
-    # bottom bar
     overlay2 = frame.copy()
     cv2.rectangle(overlay2, (0, h - HUD_BOTTOM_BAR_HEIGHT), (w, h),
                   COLOR_BLACK, -1)
@@ -126,18 +135,63 @@ def draw_hud(frame, face_count, fps, mode_text, recording=False):
                    RECORDING_INDICATOR_RADIUS, COLOR_RED, -1)
 
 
-def detect_and_draw(frame, gray, detect_eyes=True, detect_smiles=False):
-    faces = face_cascade.detectMultiScale(
+def detect_faces_dnn(frame):
+    """Use DNN (ResNet SSD) to detect faces. Returns list of (x, y, w, h)."""
+    h, w = frame.shape[:2]
+    blob = cv2.dnn.blobFromImage(
+        frame, 1.0, DNN_INPUT_SIZE, DNN_MEAN_VALUES, swapRB=False, crop=False
+    )
+    dnn_net.setInput(blob)
+    detections = dnn_net.forward()
+
+    faces = []
+    for i in range(detections.shape[2]):
+        confidence = detections[0, 0, i, 2]
+        if confidence < DNN_CONFIDENCE_THRESHOLD:
+            continue
+
+        box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+        x1, y1, x2, y2 = box.astype("int")
+
+        # clamp to frame boundaries
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(w, x2)
+        y2 = min(h, y2)
+
+        bw = x2 - x1
+        bh = y2 - y1
+        if bw > 0 and bh > 0:
+            faces.append((x1, y1, bw, bh, confidence))
+
+    return faces
+
+
+def detect_faces_haar(gray):
+    """Use Haar cascade to detect faces. Returns list of (x, y, w, h)."""
+    detections = face_cascade.detectMultiScale(
         gray,
         scaleFactor=FACE_SCALE_FACTOR,
         minNeighbors=FACE_MIN_NEIGHBORS,
         minSize=FACE_MIN_SIZE
     )
+    # add None as confidence placeholder to match DNN output format
+    faces = []
+    for (x, y, w, h) in detections:
+        faces.append((x, y, w, h, None))
+    return faces
+
+
+def detect_and_draw(frame, gray, use_dnn_mode=True, detect_eyes=True, detect_smiles=False):
+    if use_dnn_mode and dnn_net is not None:
+        faces = detect_faces_dnn(frame)
+    else:
+        faces = detect_faces_haar(gray)
 
     face_count = len(faces)
 
-    for i, (x, y, w, h) in enumerate(faces):
-        # pick color based on how close the face is
+    for i, (x, y, w, h, conf) in enumerate(faces):
+        # color based on proximity
         area = w * h
         if area > FACE_AREA_CLOSE:
             color = COLOR_CLOSE
@@ -148,13 +202,17 @@ def detect_and_draw(frame, gray, detect_eyes=True, detect_smiles=False):
 
         draw_fancy_rectangle(frame, x, y, w, h, color, thickness=CORNER_THICKNESS)
 
-        label = f"Face #{i + 1}"
+        # label with confidence if DNN
+        if conf is not None:
+            label = f"Face #{i + 1} ({conf:.0%})"
+        else:
+            label = f"Face #{i + 1}"
         draw_label(frame, label, x, y, color)
 
         roi_gray = gray[y:y + h, x:x + w]
         roi_color = frame[y:y + h, x:x + w]
 
-        if detect_eyes:
+        if detect_eyes and roi_gray.size > 0:
             eyes = eye_cascade.detectMultiScale(
                 roi_gray,
                 scaleFactor=EYE_SCALE_FACTOR,
@@ -166,7 +224,7 @@ def detect_and_draw(frame, gray, detect_eyes=True, detect_smiles=False):
                 radius = min(ew, eh) // 2
                 cv2.circle(frame, center, radius, COLOR_BLUE, FONT_THICKNESS)
 
-        if detect_smiles:
+        if detect_smiles and roi_gray.size > 0:
             smiles = smile_cascade.detectMultiScale(
                 roi_gray,
                 scaleFactor=SMILE_SCALE_FACTOR,
@@ -205,6 +263,7 @@ def main():
     print("  E - Toggle eye detection")
     print("  M - Toggle smile detection")
     print("  F - Flip camera")
+    print("  D - Toggle DNN/Haar detector")
     print()
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
@@ -221,12 +280,17 @@ def main():
     detect_eyes = DEFAULT_DETECT_EYES
     detect_smiles = DEFAULT_DETECT_SMILES
     flip_camera = DEFAULT_FLIP_CAMERA
+    use_dnn_mode = (dnn_net is not None)
     prev_time = time.time()
     fps = 0
     total_faces_detected = 0
     frame_count = 0
     screenshot_flash = 0
 
+    if use_dnn_mode:
+        print("[INFO] Using DNN detector (more accurate)")
+    else:
+        print("[INFO] Using Haar cascade detector")
     print("[INFO] Webcam started. Press Q to quit.")
 
     while True:
@@ -246,14 +310,16 @@ def main():
         prev_time = current_time
         frame_count += 1
 
-        modes = []
+        # build mode text
+        detector_name = "DNN" if (use_dnn_mode and dnn_net is not None) else "Haar"
+        modes = [detector_name]
         if detect_eyes:
             modes.append("Eyes")
         if detect_smiles:
             modes.append("Smile")
-        mode_text = "Mode: " + ("+".join(modes) if modes else "Face Only")
+        mode_text = "+".join(modes)
 
-        face_count = detect_and_draw(frame, gray, detect_eyes, detect_smiles)
+        face_count = detect_and_draw(frame, gray, use_dnn_mode, detect_eyes, detect_smiles)
         total_faces_detected += face_count
 
         draw_hud(frame, face_count, fps, mode_text)
@@ -285,6 +351,13 @@ def main():
         elif key == KEY_FLIP_CAMERA or key == KEY_FLIP_CAMERA - 32:
             flip_camera = not flip_camera
             print(f"[INFO] Camera flip: {'ON' if flip_camera else 'OFF'}")
+        elif key == KEY_TOGGLE_DNN or key == KEY_TOGGLE_DNN - 32:
+            if dnn_net is not None:
+                use_dnn_mode = not use_dnn_mode
+                det = "DNN (ResNet SSD)" if use_dnn_mode else "Haar Cascade"
+                print(f"[INFO] Switched to: {det}")
+            else:
+                print("[INFO] DNN model not available, using Haar")
 
     cap.release()
     cv2.destroyAllWindows()

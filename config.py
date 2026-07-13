@@ -23,6 +23,17 @@ FACE_CASCADE_PATH = os.path.join(HAAR_DIR, "haarcascade_frontalface_default.xml"
 EYE_CASCADE_PATH = os.path.join(HAAR_DIR, "haarcascade_eye.xml")
 SMILE_CASCADE_PATH = os.path.join(HAAR_DIR, "haarcascade_smile.xml")
 
+# DNN face detector (ResNet SSD — much more accurate than Haar)
+MODELS_DIR = os.path.join(BASE_DIR, "models")
+DNN_PROTOTXT = os.path.join(MODELS_DIR, "deploy.prototxt")
+DNN_CAFFEMODEL = os.path.join(MODELS_DIR, "res10_300x300_ssd_iter_140000.caffemodel")
+DNN_CONFIDENCE_THRESHOLD = 0.5
+DNN_INPUT_SIZE = (300, 300)
+DNN_MEAN_VALUES = (104.0, 177.0, 123.0)
+
+# set True to use DNN detector, False to fall back to Haar
+USE_DNN = os.path.isfile(DNN_CAFFEMODEL)
+
 # Webcam
 CAMERA_INDEX = 0
 CAMERA_WIDTH = 640
@@ -120,6 +131,9 @@ DEFAULT_DETECT_EYES = True
 DEFAULT_DETECT_SMILES = False
 DEFAULT_FLIP_CAMERA = True
 
+# Key binding for toggling detector
+KEY_TOGGLE_DNN = ord('d')
+
 # Key bindings
 KEY_QUIT = ord('q')
 KEY_SCREENSHOT = ord('s')
@@ -128,6 +142,6 @@ KEY_TOGGLE_SMILE = ord('m')
 KEY_FLIP_CAMERA = ord('f')
 
 # UI strings
-CONTROLS_TEXT = "[Q] Quit  [S] Screenshot  [E] Toggle Eyes  [M] Toggle Smile  [F] Flip"
+CONTROLS_TEXT = "[Q] Quit [S] Screenshot [E] Eyes [M] Smile [F] Flip [D] DNN/Haar"
 SMILE_LABEL_TEXT = "Smiling :)"
 SMILE_LABEL_Y_OFFSET = 25

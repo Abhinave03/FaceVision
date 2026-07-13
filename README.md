@@ -1,6 +1,6 @@
 # FaceVision — Real-Time Face Detection System
 
-A real-time face, eye, and smile detection system built with Python and OpenCV. Uses Haar Cascade classifiers to detect faces from webcam feed or static images, with a HUD overlay showing live stats.
+A real-time face, eye, and smile detection system built with Python and OpenCV. Supports two detection backends — a DNN-based ResNet SSD detector for higher accuracy and Haar Cascade classifiers as a lightweight fallback. Features a HUD overlay with live stats and switchable detectors.
 
 Built for **HackZen Open Challenge 2026**.
 
@@ -45,18 +45,17 @@ Build a lightweight, real-time face detection system that can:
 FaceVision has two modes:
 
 **Live Mode** (`face_detection.py`):
-Opens the webcam, detects faces frame by frame, draws styled bounding boxes with corner accents, and overlays a HUD. You can toggle eye/smile detection, flip the camera, and capture screenshots — all with keyboard shortcuts.
+Opens the webcam, detects faces frame by frame using either the DNN detector or Haar cascades (switchable at runtime with `D` key). Draws styled bounding boxes with confidence scores, and overlays a HUD. You can toggle eye/smile detection, flip the camera, and capture screenshots.
 
 **Image Mode** (`detect_image.py`):
-Takes a single image or a folder of images, runs face + eye detection, saves annotated copies. Good for batch processing.
+Takes a single image or a folder of images, runs face + eye detection, saves annotated copies. Automatically uses DNN if the model is available.
 
-The detection pipeline is straightforward:
+Two detection backends:
 
-```
-Camera/Image -> Grayscale -> Histogram Equalization -> Haar Cascade Detection -> Draw Annotations -> Display/Save
-```
+1. **DNN (ResNet SSD)** — Deep learning-based. Higher accuracy, handles angles and lighting variation well. Shows confidence percentage per face. This is the default when the model is present.
+2. **Haar Cascade** — Classic Viola-Jones approach. Faster but less accurate. Works as fallback if DNN model isn't downloaded.
 
-For faces detected, we also run eye and smile cascades within the face bounding box (ROI) to find finer features.
+For each detected face, eye and smile cascades run within the face ROI to find finer features.
 
 ---
 
@@ -65,48 +64,55 @@ For faces detected, we also run eye and smile cascades within the face bounding 
 | Tech | Purpose |
 |------|---------|
 | Python 3.10+ | Main language |
-| OpenCV 4.5+ | Image processing + Haar cascade detection |
+| OpenCV 4.5+ (with DNN module) | Image processing, Haar cascades, DNN inference |
 | NumPy | Array operations |
 
-No deep learning frameworks, no GPU needed.
+No separate deep learning frameworks needed — OpenCV's built-in DNN module handles inference. Runs on CPU.
 
 ---
 
-## Dataset
+## Dataset / Pre-trained Models
 
-No external dataset is required. We use the **pre-trained Haar Cascade XML files** that ship with OpenCV:
+No external training dataset is required. We use pre-trained models:
 
+**DNN model** (downloaded separately, ~10MB):
+- `res10_300x300_ssd_iter_140000.caffemodel` — ResNet-10 SSD face detector, trained on multiple face datasets
+- `deploy.prototxt` — model architecture definition
+
+**Haar Cascades** (bundled with OpenCV):
 - `haarcascade_frontalface_default.xml` — face detection
 - `haarcascade_eye.xml` — eye detection
 - `haarcascade_smile.xml` — smile detection
-
-These were trained using the Viola-Jones framework on large face/non-face image sets.
 
 ---
 
 ## Methodology
 
-### Viola-Jones Framework (How Haar Cascades Work)
+### DNN Detector (ResNet-10 SSD)
 
-The detection is based on the Viola-Jones algorithm, which works in 4 steps:
+The primary detector uses a Single Shot Multibox Detector (SSD) with a ResNet-10 backbone, loaded via `cv2.dnn.readNetFromCaffe`. The input image is resized to 300x300, converted to a blob with mean subtraction, and passed through the network in a single forward pass. Detections above the confidence threshold (default 0.5) are kept.
 
-1. **Haar features** — Rectangular filters that pick up contrast patterns (like eyes being darker than the forehead). There are edge, line, and four-rectangle variants.
+This approach handles varying lighting, partial occlusion, and tilted faces much better than Haar cascades.
 
-2. **Integral image** — A fast way to compute the sum of any rectangular region in constant time. This makes evaluating thousands of Haar features practical.
+### Haar Cascade (Viola-Jones — Fallback)
 
-3. **AdaBoost** — From ~180,000 possible features, AdaBoost picks the most useful ones and combines them into a strong classifier.
+The fallback detector uses the Viola-Jones algorithm:
 
-4. **Cascade structure** — Multiple stages of classifiers run in sequence. Easy negatives (clearly not a face) get rejected early, so the detector spends more time only on promising regions. About 95% of the image gets rejected in the first two stages.
+1. **Haar features** — Rectangular filters that capture contrast patterns (eyes darker than forehead, etc.).
+2. **Integral image** — Enables fast feature computation at any scale.
+3. **AdaBoost** — Selects the most discriminative features from ~180K candidates.
+4. **Cascade** — Multi-stage classifier; 95% of non-face regions are rejected in the first two stages.
 
-### Detection Parameters
+### Key Parameters
 
-| Param | Value | What it does |
-|-------|-------|-------------|
-| scaleFactor | 1.1 | Shrinks image by 10% each pyramid level |
-| minNeighbors | 5 | How many overlapping detections needed to confirm a face |
-| minSize | (30,30) | Ignore anything smaller than 30x30 pixels |
+| Param | DNN | Haar |
+|-------|-----|------|
+| Confidence threshold | 0.5 | N/A |
+| scaleFactor | N/A | 1.1 |
+| minNeighbors | N/A | 5 |
+| minSize | 300x300 (input) | 30x30 |
 
-All parameters are configurable in `config.py`.
+All parameters are in `config.py`.
 
 ---
 
@@ -130,9 +136,12 @@ source venv/bin/activate # Linux/Mac
 
 # install dependencies
 pip install -r requirements.txt
+
+# download the DNN model (~10MB, one-time)
+python download_models.py
 ```
 
-That's it. Two packages, no GPU.
+The DNN model download is optional — the app falls back to Haar cascades if the model isn't present.
 
 ---
 
@@ -152,6 +161,7 @@ Controls:
 | E | Toggle eye detection |
 | M | Toggle smile detection |
 | F | Flip camera (mirror) |
+| D | Switch between DNN and Haar detector |
 
 ### Static image detection
 
@@ -191,11 +201,13 @@ Outputs detection speed at different resolutions + webcam FPS test. Saves result
 | 1920x1080 | ~85ms | ~12 |
 
 ### What works well
-- Real-time detection at 30+ FPS on 640x480
+- DNN detector handles lighting changes, angles, and partial occlusion well
+- Real-time detection at 25-30 FPS with DNN on CPU
+- Confidence scores shown per face (DNN mode)
 - Multi-face detection in the same frame
-- Eye detection within face ROI
-- Smile detection with visual label
+- Eye and smile detection within face ROI
 - Color-coded bounding boxes (green = close, cyan = medium, yellow = far)
+- Live switching between DNN and Haar detectors
 - Screenshot capture with flash effect
 - Batch image processing
 
@@ -209,10 +221,14 @@ FaceVision/
 ├── face_detection.py     # main webcam detection app
 ├── detect_image.py       # static image / batch detection
 ├── benchmark.py          # performance benchmarking
+├── download_models.py    # one-time DNN model download script
 ├── requirements.txt      # dependencies
 ├── .gitignore
 ├── LICENSE
 ├── README.md
+├── models/               # DNN model files
+│   ├── deploy.prototxt
+│   └── *.caffemodel      # downloaded via download_models.py
 ├── screenshots/          # saved screenshots (auto-created)
 └── output/               # batch processing output (auto-created)
 ```
@@ -221,7 +237,7 @@ FaceVision/
 
 ## Future Scope
 
-- Replace Haar cascades with a DNN-based detector (SSD/YOLO) for better accuracy
+- Upgrade to YOLOv8-face or MediaPipe for even higher accuracy
 - Add face recognition to identify known individuals
 - Integrate emotion classification (happy, sad, angry etc.)
 - Add age/gender estimation
@@ -235,8 +251,10 @@ FaceVision/
 ## References
 
 1. Viola, P., & Jones, M. (2001). "Rapid Object Detection using a Boosted Cascade of Simple Features." IEEE CVPR.
-2. OpenCV Cascade Classifier Tutorial — https://docs.opencv.org/4.x/db/d28/tutorial_cascade_classifier.html
-3. OpenCV Haar Cascades — https://github.com/opencv/opencv/tree/master/data/haarcascades
+2. Liu, W. et al. (2016). "SSD: Single Shot MultiBox Detector." ECCV.
+3. OpenCV DNN Face Detector — https://github.com/opencv/opencv/tree/master/samples/dnn/face_detector
+4. OpenCV Cascade Classifier Tutorial — https://docs.opencv.org/4.x/db/d28/tutorial_cascade_classifier.html
+5. OpenCV Haar Cascades — https://github.com/opencv/opencv/tree/master/data/haarcascades
 
 ---
 

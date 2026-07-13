@@ -18,10 +18,20 @@ from config import (
     IMAGE_SUMMARY_BAR_HEIGHT, IMAGE_SUMMARY_Y_OFFSET,
     OUTPUT_DIR, SUPPORTED_IMAGE_EXTENSIONS,
     APP_NAME,
+    USE_DNN, DNN_PROTOTXT, DNN_CAFFEMODEL,
+    DNN_CONFIDENCE_THRESHOLD, DNN_INPUT_SIZE, DNN_MEAN_VALUES,
 )
 
 FACE_CASCADE = cv2.CascadeClassifier(FACE_CASCADE_PATH)
 EYE_CASCADE = cv2.CascadeClassifier(EYE_CASCADE_PATH)
+
+# load DNN if available
+dnn_net = None
+if USE_DNN:
+    try:
+        dnn_net = cv2.dnn.readNetFromCaffe(DNN_PROTOTXT, DNN_CAFFEMODEL)
+    except Exception:
+        dnn_net = None
 
 
 def detect_faces_in_image(image_path, output_path=None, show=True):
@@ -36,20 +46,45 @@ def detect_faces_in_image(image_path, output_path=None, show=True):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     gray = cv2.equalizeHist(gray)
 
-    faces = FACE_CASCADE.detectMultiScale(
-        gray,
-        scaleFactor=FACE_SCALE_FACTOR,
-        minNeighbors=FACE_MIN_NEIGHBORS,
-        minSize=FACE_MIN_SIZE
-    )
+    # detect faces using DNN or Haar
+    faces = []
+    if dnn_net is not None:
+        h_img, w_img = img.shape[:2]
+        blob = cv2.dnn.blobFromImage(
+            img, 1.0, DNN_INPUT_SIZE, DNN_MEAN_VALUES, swapRB=False, crop=False
+        )
+        dnn_net.setInput(blob)
+        detections = dnn_net.forward()
+
+        for i in range(detections.shape[2]):
+            conf = detections[0, 0, i, 2]
+            if conf < DNN_CONFIDENCE_THRESHOLD:
+                continue
+            box = detections[0, 0, i, 3:7] * np.array([w_img, h_img, w_img, h_img])
+            x1, y1, x2, y2 = box.astype("int")
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w_img, x2), min(h_img, y2)
+            bw, bh = x2 - x1, y2 - y1
+            if bw > 0 and bh > 0:
+                faces.append((x1, y1, bw, bh, conf))
+        detector = "DNN"
+    else:
+        raw = FACE_CASCADE.detectMultiScale(
+            gray,
+            scaleFactor=FACE_SCALE_FACTOR,
+            minNeighbors=FACE_MIN_NEIGHBORS,
+            minSize=FACE_MIN_SIZE
+        )
+        faces = [(x, y, w, h, None) for (x, y, w, h) in raw]
+        detector = "Haar"
 
     face_count = len(faces)
+    print(f"  Detector: {detector}")
     print(f"  Faces detected: {face_count}")
 
-    for i, (x, y, w, h) in enumerate(faces):
+    for i, (x, y, w, h, conf) in enumerate(faces):
         cv2.rectangle(img, (x, y), (x + w, y + h), COLOR_GREEN, RECT_THICKNESS)
 
-        # corner accents
         cl = CORNER_ACCENT_LENGTH
         ct = CORNER_THICKNESS_IMAGE
         cv2.line(img, (x, y), (x + cl, y), COLOR_GREEN, ct)
@@ -61,32 +96,37 @@ def detect_faces_in_image(image_path, output_path=None, show=True):
         cv2.line(img, (x + w, y + h), (x + w - cl, y + h), COLOR_GREEN, ct)
         cv2.line(img, (x + w, y + h), (x + w, y + h - cl), COLOR_GREEN, ct)
 
-        # label above face
-        label = f"Face #{i + 1}"
+        # label
+        if conf is not None:
+            label = f"Face #{i + 1} ({conf:.0%})"
+        else:
+            label = f"Face #{i + 1}"
         (tw, th), _ = cv2.getTextSize(label, FONT, FONT_SCALE_NORMAL, FONT_THICKNESS)
         cv2.rectangle(img, (x, y - th - LABEL_BG_PADDING),
                       (x + tw + LABEL_BG_PADDING, y), COLOR_GREEN, -1)
         cv2.putText(img, label, (x + LABEL_PADDING_X, y - LABEL_PADDING_Y),
                     FONT, FONT_SCALE_NORMAL, COLOR_WHITE, FONT_THICKNESS, LINE_TYPE)
 
-        # detect eyes inside face region
+        # eyes
         roi_gray = gray[y:y + h, x:x + w]
-        eyes = EYE_CASCADE.detectMultiScale(
-            roi_gray,
-            scaleFactor=EYE_SCALE_FACTOR,
-            minNeighbors=EYE_MIN_NEIGHBORS,
-            minSize=EYE_MIN_SIZE
-        )
-        for (ex, ey, ew, eh) in eyes[:EYE_MAX_COUNT]:
-            center = (x + ex + ew // 2, y + ey + eh // 2)
-            radius = min(ew, eh) // 2
-            cv2.circle(img, center, radius, COLOR_BLUE, RECT_THICKNESS)
+        if roi_gray.size > 0:
+            eyes = EYE_CASCADE.detectMultiScale(
+                roi_gray,
+                scaleFactor=EYE_SCALE_FACTOR,
+                minNeighbors=EYE_MIN_NEIGHBORS,
+                minSize=EYE_MIN_SIZE
+            )
+            for (ex, ey, ew, eh) in eyes[:EYE_MAX_COUNT]:
+                center = (x + ex + ew // 2, y + ey + eh // 2)
+                radius = min(ew, eh) // 2
+                cv2.circle(img, center, radius, COLOR_BLUE, RECT_THICKNESS)
 
-        print(f"    Face #{i + 1}: pos=({x},{y}), size={w}x{h}, eyes={len(eyes[:EYE_MAX_COUNT])}")
+        conf_str = f", conf={conf:.2f}" if conf else ""
+        print(f"    Face #{i + 1}: pos=({x},{y}), size={w}x{h}{conf_str}")
 
-    # summary bar at bottom
+    # summary bar
     h_img, w_img = img.shape[:2]
-    summary = f"{APP_NAME} | Detected: {face_count} face(s)"
+    summary = f"{APP_NAME} [{detector}] | Detected: {face_count} face(s)"
     overlay = img.copy()
     cv2.rectangle(overlay, (0, h_img - IMAGE_SUMMARY_BAR_HEIGHT),
                   (w_img, h_img), COLOR_BLACK, -1)
@@ -95,7 +135,6 @@ def detect_faces_in_image(image_path, output_path=None, show=True):
                 (HUD_TITLE_X, h_img - IMAGE_SUMMARY_Y_OFFSET),
                 FONT, FONT_SCALE_NORMAL, COLOR_WHITE, FONT_THICKNESS, LINE_TYPE)
 
-    # save output
     if output_path is None:
         base, ext = os.path.splitext(image_path)
         output_path = f"{base}_detected{ext}"
